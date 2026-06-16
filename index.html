@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Production Dossier Builder</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Production dossier</p>
+        <h1>Creative, rehearsal, and safety packet</h1>
+      </div>
+      <div class="header-actions">
+        <button class="icon-button" id="saveButton" title="Save">Save</button>
+        <button class="primary-button" id="printAllButton">Print all</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="section-nav" aria-label="Sections">
+        <button data-target="production" class="active">Production</button>
+        <button data-target="analyze">Analyze</button>
+        <button data-target="beats">Beats</button>
+        <button data-target="characters">Characters</button>
+        <button data-target="scenes">Scenes</button>
+        <button data-target="design">Design</button>
+        <button data-target="schedule">Schedule</button>
+        <button data-target="checklists">Checklists</button>
+        <button data-target="safety">Safety</button>
+        <button data-target="blocking">Blocking</button>
+        <button data-target="exports">Exports</button>
+      </aside>
+
+      <section class="content">
+        <section class="panel" id="production" data-print-title="Production Information">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Fill out form</p>
+              <h2>Production information</h2>
+            </div>
+            <button class="secondary-button print-section" data-print="production">Print</button>
+          </div>
+
+          <form id="productionForm" class="form-grid">
+            <label>
+              Work type
+              <select name="workType">
+                <option>Play</option>
+                <option>Musical</option>
+                <option>Movie</option>
+                <option>Opera</option>
+                <option>Dance theatre</option>
+                <option>Devised work</option>
+                <option>Article / essay adaptation</option>
+              </select>
+            </label>
+            <label>
+              Title
+              <input name="title" list="titleSuggestions" placeholder="Select or type title">
+              <datalist id="titleSuggestions">
+                <option value="Hamlet"></option>
+                <option value="The Crucible"></option>
+                <option value="Into the Woods"></option>
+                <option value="A Streetcar Named Desire"></option>
+                <option value="West Side Story"></option>
+              </datalist>
+            </label>
+            <label>
+              Written by
+              <input name="writtenBy" placeholder="Playwright / screenwriter">
+            </label>
+            <label>
+              Book / libretto by
+              <input name="bookBy" placeholder="If applicable">
+            </label>
+            <label>
+              Adaptation by
+              <input name="adaptationBy" placeholder="If applicable">
+            </label>
+            <label>
+              Translation by
+              <input name="translatedBy" placeholder="If applicable">
+            </label>
+            <label>
+              Music by
+              <input name="musicBy" placeholder="If applicable">
+            </label>
+            <label>
+              Lyrics by
+              <input name="lyricsBy" placeholder="If applicable">
+            </label>
+            <label>
+              Composed by
+              <input name="composedBy" placeholder="If different from music by">
+            </label>
+            <label>
+              Orchestrations / arrangements by
+              <input name="arrangementsBy" placeholder="If applicable">
+            </label>
+            <label>
+              Directed by
+              <input name="directedBy">
+            </label>
+            <label>
+              Music direction by
+              <input name="musicDirectionBy" placeholder="If applicable">
+            </label>
+            <label>
+              Choreography by
+              <input name="choreographyBy" placeholder="If applicable">
+            </label>
+            <label>
+              Dramaturgy by
+              <input name="dramaturgyBy">
+            </label>
+            <label>
+              Set design by
+              <input name="setDesignBy">
+            </label>
+            <label>
+              Costume design by
+              <input name="costumeBy">
+            </label>
+            <label>
+              Lighting design by
+              <input name="lightingBy">
+            </label>
+            <label>
+              Sound design by
+              <input name="soundBy">
+            </label>
+            <label>
+              Props by
+              <input name="propsBy">
+            </label>
+            <label>
+              Stage manager
+              <input name="stageManager">
+            </label>
+            <label>
+              Producer / company
+              <input name="producer">
+            </label>
+            <label>
+              Venue
+              <input name="venue">
+            </label>
+            <label>
+              Rights / licensing
+              <input name="rights" placeholder="Agency, status, restrictions">
+            </label>
+            <label>
+              Production dates
+              <input name="dates" placeholder="Rehearsal / tech / opening">
+            </label>
+            <label class="wide">
+              Production notes
+              <textarea name="notes" rows="4" placeholder="Casting needs, language, runtime, content notes, constraints"></textarea>
+            </label>
+            <div class="wide form-actions">
+              <button type="submit" class="primary-button">Commit production info</button>
+              <button type="button" class="secondary-button" id="clearProduction">Clear</button>
+            </div>
+          </form>
+
+          <div id="committedProduction" class="committed hidden" aria-live="polite">
+            <div class="committed-top">
+              <div>
+                <p class="eyebrow">Committed</p>
+                <h3 id="committedTitle">Untitled production</h3>
+              </div>
+              <button class="secondary-button" id="expandProduction">Edit full form</button>
+            </div>
+            <div class="icon-grid" id="productionIconGrid"></div>
+          </div>
+        </section>
+
+        <section class="panel" id="analyze" data-print-title="Analyze Files">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Analyze</p>
+              <h2>Load script, libretto, article, or notes</h2>
+            </div>
+            <button class="secondary-button print-section" data-print="analyze">Print</button>
+          </div>
+          <div class="analyze-layout">
+            <label class="drop-zone">
+              <span>Attach file/files</span>
+              <input id="fileInput" type="file" multiple accept=".txt,.md,.csv,.rtf,.html,.htm,.json,.doc,.docx,.pdf">
+              <strong>Script, libretto, article, rehearsal notes</strong>
+              <small>Plain text, markdown, HTML, and CSV are read directly. DOCX/PDF names are stored for packet tracking.</small>
+            </label>
+            <div class="chatgpt-box">
+              <p class="eyebrow">ChatGPT association</p>
+              <h3>In-app analysis workspace</h3>
+              <p>Use the local analyzer now, or paste generated text from a paid ChatGPT workflow into any editable section. A secure API backend can be connected here later without changing the production packet structure.</p>
+              <label class="inline-check">
+                <input type="checkbox" id="chatgptAssociation" checked>
+                Keep sections formatted for ChatGPT refinement
+              </label>
+            </div>
+          </div>
+          <div id="fileList" class="file-list"></div>
+          <button class="primary-button analyze-button" id="analyzeButton">Analyze file(s)</button>
+        </section>
+
+        <section class="panel" id="beats" data-print-title="Save the Cat Beat Sheet">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Blake Snyder style</p><h2>Save the Cat beat sheet</h2></div>
+            <button class="secondary-button print-section" data-print="beats">Print</button>
+          </div>
+          <div id="beatsContent" class="editable" contenteditable="true"></div>
+        </section>
+
+        <section class="panel" id="characters" data-print-title="Character List">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Editable</p><h2>Character list with explanations</h2></div>
+            <button class="secondary-button print-section" data-print="characters">Print</button>
+          </div>
+          <div id="charactersContent" class="editable" contenteditable="true"></div>
+        </section>
+
+        <section class="panel" id="scenes" data-print-title="Scene Descriptions">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Editable</p><h2>Scene descriptions and global explanation</h2></div>
+            <button class="secondary-button print-section" data-print="scenes">Print</button>
+          </div>
+          <div id="scenesContent" class="editable" contenteditable="true"></div>
+        </section>
+
+        <section class="panel" id="design" data-print-title="Design Notes">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Editable</p><h2>Costume, lighting, choreography</h2></div>
+            <button class="secondary-button print-section" data-print="design">Print</button>
+          </div>
+          <div class="three-column">
+            <article><h3>Costume</h3><div id="costumeContent" class="editable compact" contenteditable="true"></div></article>
+            <article><h3>Lighting design</h3><div id="lightingContent" class="editable compact" contenteditable="true"></div></article>
+            <article><h3>Choreography</h3><div id="choreoContent" class="editable compact" contenteditable="true"></div></article>
+          </div>
+        </section>
+
+        <section class="panel" id="schedule" data-print-title="Rehearsal Schedule">
+          <div class="panel-heading">
+            <div><p class="eyebrow">6 work days, 10:00-17:00</p><h2>Rehearsal calendar</h2></div>
+            <button class="secondary-button print-section" data-print="schedule">Print</button>
+          </div>
+          <div id="scheduleContent" class="editable" contenteditable="true"></div>
+        </section>
+
+        <section class="panel" id="checklists" data-print-title="Attendance and Work Checklists">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Printable</p><h2>Attendance, scenes, and musical numbers</h2></div>
+            <button class="secondary-button print-section" data-print="checklists">Print</button>
+          </div>
+          <div id="checklistContent" class="editable" contenteditable="true"></div>
+        </section>
+
+        <section class="panel" id="safety" data-print-title="Technical Safety">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Technical safety</p><h2>Warnings and checkout buttons</h2></div>
+            <button class="secondary-button print-section" data-print="safety">Print</button>
+          </div>
+          <div id="safetyContent" class="editable" contenteditable="true"></div>
+          <div id="safetyChecks" class="safety-checks"></div>
+        </section>
+
+        <section class="panel" id="blocking" data-print-title="Blocking Sheet">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Blocking sheet</p><h2>Stage movement record</h2></div>
+            <button class="secondary-button print-section" data-print="blocking">Print</button>
+          </div>
+          <div id="blockingContent" class="editable" contenteditable="true"></div>
+        </section>
+
+        <section class="panel" id="exports" data-print-title="Exports">
+          <div class="panel-heading">
+            <div><p class="eyebrow">Conversion-ready</p><h2>Export and convert</h2></div>
+            <button class="secondary-button print-section" data-print="exports">Print</button>
+          </div>
+          <div class="export-grid">
+            <button data-export="doc">Word / Pages packet</button>
+            <button data-export="xls">Excel / Numbers workbook</button>
+            <button data-export="ppt">PowerPoint / Keynote outline</button>
+            <button data-export="json">Production data JSON</button>
+          </div>
+          <p class="export-note">DOC, XLS, and PPT exports are Office-compatible HTML documents that Pages, Numbers, Keynote, Word, Excel, and PowerPoint can import and convert.</p>
+        </section>
+      </section>
+    </main>
+
+    <div id="printMount" hidden></div>
+    <script src="app.js"></script>
+  </body>
+</html>
