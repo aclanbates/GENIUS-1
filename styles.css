@@ -307,6 +307,16 @@ textarea {
   margin: 0 0 8px;
 }
 
+.chatgpt-box label:not(.inline-check) {
+  margin-top: 12px;
+}
+
+.chatgpt-box small {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+}
+
 .inline-check {
   display: flex;
   grid-template-columns: auto 1fr;
@@ -360,6 +370,28 @@ textarea {
 
 .analyze-button {
   min-width: 180px;
+}
+
+.analyze-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.analysis-status {
+  min-height: 24px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.analysis-status[data-tone="success"] {
+  color: var(--green);
+}
+
+.analysis-status[data-tone="warning"] {
+  color: var(--gold);
 }
 
 .editable {
@@ -417,6 +449,20 @@ textarea {
 
 .compact {
   min-height: 240px;
+}
+
+.extra-sections {
+  display: grid;
+  gap: 14px;
+}
+
+.extra-section {
+  display: grid;
+  gap: 8px;
+}
+
+.extra-section-heading h3 {
+  margin: 0;
 }
 
 .safety-checks {

@@ -30,6 +30,7 @@
         <button data-target="checklists">Checklists</button>
         <button data-target="safety">Safety</button>
         <button data-target="blocking">Blocking</button>
+        <button data-target="chatgpt-additions">ChatGPT</button>
         <button data-target="exports">Exports</button>
       </aside>
 
@@ -195,15 +196,28 @@
             <div class="chatgpt-box">
               <p class="eyebrow">ChatGPT association</p>
               <h3>In-app analysis workspace</h3>
-              <p>Use the local analyzer now, or paste generated text from a paid ChatGPT workflow into any editable section. A secure API backend can be connected here later without changing the production packet structure.</p>
+              <p>Use your OpenAI API key to send extracted uploaded text to ChatGPT-style analysis without opening another window. If no key is entered, the local analyzer will run.</p>
               <label class="inline-check">
-                <input type="checkbox" id="chatgptAssociation" checked>
-                Keep sections formatted for ChatGPT refinement
+                <input type="checkbox" id="useChatGPT" checked>
+                Use ChatGPT/OpenAI API when available
               </label>
+              <label>
+                API key
+                <input id="openaiApiKey" type="password" autocomplete="off" placeholder="sk-...">
+              </label>
+              <label>
+                Model
+                <input id="openaiModel" value="gpt-5.5">
+              </label>
+              <small>Your key is stored only in this browser session, not in exported packets.</small>
             </div>
           </div>
           <div id="fileList" class="file-list"></div>
-          <button class="primary-button analyze-button" id="analyzeButton">Analyze file(s)</button>
+          <div class="analyze-actions">
+            <button class="primary-button analyze-button" id="analyzeButton">Analyze file(s)</button>
+            <button class="secondary-button" id="resetButton">Reset page</button>
+          </div>
+          <div id="analysisStatus" class="analysis-status" aria-live="polite"></div>
         </section>
 
         <section class="panel" id="beats" data-print-title="Save the Cat Beat Sheet">
@@ -273,6 +287,14 @@
             <button class="secondary-button print-section" data-print="blocking">Print</button>
           </div>
           <div id="blockingContent" class="editable" contenteditable="true"></div>
+        </section>
+
+        <section class="panel hidden" id="chatgpt-additions" data-print-title="ChatGPT Additions">
+          <div class="panel-heading">
+            <div><p class="eyebrow">ChatGPT</p><h2>Additional generated sections</h2></div>
+            <button class="secondary-button print-section" data-print="chatgpt-additions">Print</button>
+          </div>
+          <div id="extraSectionsContent" class="extra-sections"></div>
         </section>
 
         <section class="panel" id="exports" data-print-title="Exports">

@@ -42,7 +42,8 @@ const editableIds = [
 const state = {
   production: {},
   files: [],
-  sourceText: ""
+  sourceText: "",
+  extraSections: []
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -514,6 +515,191 @@ function htmlList(items) {
   return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
 }
 
+function setAnalysisStatus(message, tone = "neutral") {
+  const status = $("#analysisStatus");
+  status.textContent = message;
+  status.dataset.tone = tone;
+}
+
+function sectionItemsToHtml(items = []) {
+  if (!Array.isArray(items) || !items.length) return "<p>No generated notes yet.</p>";
+  return items.map((item) => {
+    if (typeof item === "string") return `<p>${escapeHtml(item)}</p>`;
+    const title = item.title || item.name || item.beat || item.scene || item.day || "Note";
+    const body = item.body || item.description || item.explanation || item.notes || item.scriptEvidence || "";
+    const extras = Object.entries(item)
+      .filter(([key]) => !["title", "name", "beat", "scene", "day", "body", "description", "explanation", "notes", "scriptEvidence"].includes(key))
+      .map(([key, value]) => `<p><strong>${escapeHtml(titleCase(key.replace(/_/g, " ")))}:</strong> ${escapeHtml(Array.isArray(value) ? value.join(", ") : value)}</p>`)
+      .join("");
+    return `<h3>${escapeHtml(title)}</h3><p>${escapeHtml(body)}</p>${extras}`;
+  }).join("");
+}
+
+function renderExtraSections(sections = state.extraSections) {
+  state.extraSections = Array.isArray(sections) ? sections : [];
+  const panel = $("#chatgpt-additions");
+  const container = $("#extraSectionsContent");
+  if (!state.extraSections.length) {
+    container.innerHTML = "";
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  container.innerHTML = state.extraSections.map((section, index) => `
+    <article class="extra-section">
+      <div class="extra-section-heading">
+        <h3>${escapeHtml(section.title || `Generated section ${index + 1}`)}</h3>
+      </div>
+      <div class="editable compact" contenteditable="true" data-extra-index="${index}">${section.html || sectionItemsToHtml(section.items || [section.content || section.body || ""])}</div>
+    </article>
+  `).join("");
+}
+
+function syncExtraSectionsFromDom() {
+  $$("#extraSectionsContent [data-extra-index]").forEach((node) => {
+    const index = Number(node.dataset.extraIndex);
+    if (state.extraSections[index]) state.extraSections[index].html = node.innerHTML;
+  });
+}
+
+function buildChatGPTPrompt() {
+  const title = state.production.title || "Untitled production";
+  const source = state.sourceText.slice(0, 90000);
+  return `breakdown like Blake Snyder's Save the cat beat sheet
+
+Production title: ${title}
+
+Use the uploaded script/libretto/article text below. Return only valid JSON that matches the requested structure. Fill every related section. If you need a section that does not map to an existing box, put it in extraSections with a clear title.
+
+Required output:
+- beatSheet: 15 Blake Snyder Save the Cat beats. Each item needs title, scriptEvidence, and productionReading.
+- characters: character list with explanation, function, actorNotes.
+- scenes: scene descriptions with global explanation.
+- costume: costume design notes.
+- lighting: lighting design notes.
+- choreography: choreography suggestions.
+- schedule: rehearsal calendar for 6 work days, 10:00-17:00, including scene breakdown, songs, choreography, sitzprobe, tech, and dress rehearsal.
+- checklists: attendance, scenes, musical numbers worked on.
+- safety: technical safety warnings and checkout items.
+- blocking: blocking sheet rows.
+- extraSections: any extra boxes with necessary titles.
+
+Uploaded text:
+${source}`;
+}
+
+function chatGPTResponseSchema() {
+  const noteArray = {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        title: { type: "string" },
+        body: { type: "string" },
+        scriptEvidence: { type: "string" },
+        productionReading: { type: "string" },
+        explanation: { type: "string" },
+        notes: { type: "string" }
+      },
+      required: ["title", "body", "scriptEvidence", "productionReading", "explanation", "notes"]
+    }
+  };
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      beatSheet: { type: "array", items: { type: "object", additionalProperties: false, properties: { title: { type: "string" }, scriptEvidence: { type: "string" }, productionReading: { type: "string" } }, required: ["title", "scriptEvidence", "productionReading"] } },
+      characters: noteArray,
+      scenes: noteArray,
+      costume: noteArray,
+      lighting: noteArray,
+      choreography: noteArray,
+      schedule: noteArray,
+      checklists: noteArray,
+      safety: noteArray,
+      blocking: noteArray,
+      extraSections: { type: "array", items: { type: "object", additionalProperties: false, properties: { title: { type: "string" }, content: { type: "string" }, body: { type: "string" } }, required: ["title", "content", "body"] } }
+    },
+    required: ["beatSheet", "characters", "scenes", "costume", "lighting", "choreography", "schedule", "checklists", "safety", "blocking", "extraSections"]
+  };
+}
+
+function extractResponseText(responseJson) {
+  if (responseJson.output_text) return responseJson.output_text;
+  const content = responseJson.output?.flatMap((item) => item.content || []) || [];
+  const textParts = content.map((part) => part.text || part.output_text || "").filter(Boolean);
+  return textParts.join("\n");
+}
+
+async function callChatGPTAnalysis() {
+  const apiKey = $("#openaiApiKey").value.trim();
+  const model = $("#openaiModel").value.trim() || "gpt-5.5";
+  if (!apiKey) throw new Error("Add an OpenAI API key to use ChatGPT analysis.");
+  if (!state.sourceText.trim()) throw new Error("Upload a readable file before analysis.");
+  sessionStorage.setItem("genius-openai-model", model);
+  sessionStorage.setItem("genius-openai-key", apiKey);
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      input: [
+        {
+          role: "system",
+          content: "You are an expert theatre dramaturg, director, choreographer, designer, and stage manager. Return production-ready structured JSON only."
+        },
+        {
+          role: "user",
+          content: buildChatGPTPrompt()
+        }
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "production_breakdown",
+          strict: true,
+          schema: chatGPTResponseSchema()
+        }
+      }
+    })
+  });
+  const responseJson = await response.json();
+  if (!response.ok) {
+    const detail = responseJson.error?.message || `OpenAI request failed with status ${response.status}`;
+    throw new Error(detail);
+  }
+  const text = extractResponseText(responseJson);
+  return JSON.parse(text);
+}
+
+function applyChatGPTBreakdown(data) {
+  $("#beatsContent").innerHTML = (data.beatSheet || []).map((item, index) => `
+    <h3>${escapeHtml(item.title || `${index + 1}. Beat`)}</h3>
+    <p><strong>Script evidence:</strong> ${escapeHtml(item.scriptEvidence || "")}</p>
+    <p><strong>Production reading:</strong> ${escapeHtml(item.productionReading || "")}</p>
+  `).join("");
+  $("#charactersContent").innerHTML = sectionItemsToHtml(data.characters);
+  $("#scenesContent").innerHTML = sectionItemsToHtml(data.scenes);
+  $("#costumeContent").innerHTML = sectionItemsToHtml(data.costume);
+  $("#lightingContent").innerHTML = sectionItemsToHtml(data.lighting);
+  $("#choreoContent").innerHTML = sectionItemsToHtml(data.choreography);
+  $("#scheduleContent").innerHTML = sectionItemsToHtml(data.schedule);
+  $("#checklistContent").innerHTML = sectionItemsToHtml(data.checklists);
+  $("#safetyContent").innerHTML = sectionItemsToHtml(data.safety);
+  $("#blockingContent").innerHTML = sectionItemsToHtml(data.blocking);
+  $("#safetyChecks").innerHTML = (data.safety || []).map((item) => `
+    <label class="safety-item">
+      <input type="checkbox">
+      <span>${escapeHtml(item.title || item.body || "Safety item")} checked out</span>
+    </label>
+  `).join("");
+  renderExtraSections(data.extraSections || []);
+}
+
 function generateBeatSheet(text, scenes) {
   const title = state.production.title || "the piece";
   const slices = getStorySlices(text, scenes);
@@ -644,7 +830,7 @@ function generateBlocking(scenes) {
   return `<table><thead><tr><th>Scene</th><th>Start</th><th>Blocking</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-function analyze() {
+function runLocalAnalysis() {
   const text = state.sourceText.trim();
   const scenes = splitScenes(text);
   const songs = findSongs(text);
@@ -656,8 +842,57 @@ function analyze() {
   $("#checklistContent").innerHTML = generateChecklists(scenes, songs);
   generateSafety(text);
   $("#blockingContent").innerHTML = generateBlocking(scenes);
+  renderExtraSections([]);
   saveState();
   $("#beats").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function analyze() {
+  const useChatGPT = $("#useChatGPT").checked;
+  const hasApiKey = $("#openaiApiKey").value.trim();
+  $("#analyzeButton").disabled = true;
+  setAnalysisStatus(useChatGPT && hasApiKey ? "Sending uploaded text to ChatGPT for Save the Cat breakdown..." : "Running local Save the Cat breakdown...", "neutral");
+  try {
+    if (useChatGPT && hasApiKey) {
+      const breakdown = await callChatGPTAnalysis();
+      applyChatGPTBreakdown(breakdown);
+      saveState();
+      setAnalysisStatus("ChatGPT breakdown inserted into the related editable boxes.", "success");
+      $("#beats").scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    runLocalAnalysis();
+    setAnalysisStatus(useChatGPT ? "No API key entered, so the local analyzer ran instead." : "Local analyzer complete.", useChatGPT ? "warning" : "success");
+  } catch (error) {
+    runLocalAnalysis();
+    setAnalysisStatus(`ChatGPT analysis could not complete: ${error.message}. Local analyzer results were inserted instead.`, "warning");
+  } finally {
+    $("#analyzeButton").disabled = false;
+  }
+}
+
+function resetPage() {
+  state.production = {};
+  state.files = [];
+  state.sourceText = "";
+  state.extraSections = [];
+  $("#productionForm").reset();
+  $("#productionForm").classList.remove("hidden");
+  $("#committedProduction").classList.add("hidden");
+  $("#productionIconGrid").innerHTML = "";
+  $("#fileInput").value = "";
+  renderFileList();
+  editableIds.forEach((id) => {
+    $(`#${id}`).innerHTML = "";
+  });
+  $("#safetyChecks").innerHTML = "";
+  $("#analysisStatus").textContent = "";
+  $("#openaiApiKey").value = "";
+  $("#openaiModel").value = "gpt-5.5";
+  sessionStorage.removeItem("genius-openai-key");
+  sessionStorage.removeItem("genius-openai-model");
+  renderExtraSections([]);
+  localStorage.removeItem("production-dossier");
 }
 
 function printSection(sectionId) {
@@ -692,9 +927,11 @@ function exportPacket(format) {
   if (format === "xls") download(`${title || "production-dossier"}.xls`, html, "application/vnd.ms-excel");
   if (format === "ppt") download(`${title || "production-dossier"}.ppt`, html, "application/vnd.ms-powerpoint");
   if (format === "json") {
+    syncExtraSectionsFromDom();
     const payload = {
       production: state.production,
       files: state.files,
+      extraSections: state.extraSections,
       sections: Object.fromEntries(editableIds.map((id) => [id, $(`#${id}`).innerHTML]))
     };
     download(`${title || "production-dossier"}.json`, JSON.stringify(payload, null, 2), "application/json");
@@ -702,10 +939,12 @@ function exportPacket(format) {
 }
 
 function saveState() {
+  syncExtraSectionsFromDom();
   const payload = {
     production: state.production,
     files: state.files,
     sourceText: state.sourceText,
+    extraSections: state.extraSections,
     sections: Object.fromEntries(editableIds.map((id) => [id, $(`#${id}`).innerHTML])),
     committed: !$("#committedProduction").classList.contains("hidden")
   };
@@ -720,6 +959,7 @@ function loadState() {
     state.production = payload.production || {};
     state.files = payload.files || [];
     state.sourceText = payload.sourceText || "";
+    state.extraSections = payload.extraSections || [];
     if (state.sourceText && state.files.length === 1 && !state.files[0].text) {
       state.files[0].text = state.sourceText;
     }
@@ -729,6 +969,7 @@ function loadState() {
     editableIds.forEach((id) => {
       if (payload.sections?.[id]) $(`#${id}`).innerHTML = payload.sections[id];
     });
+    renderExtraSections(state.extraSections);
     if (payload.committed) {
       renderProductionIcons();
       $("#productionForm").classList.add("hidden");
@@ -737,6 +978,10 @@ function loadState() {
   } catch {
     localStorage.removeItem("production-dossier");
   }
+  const sessionKey = sessionStorage.getItem("genius-openai-key");
+  const sessionModel = sessionStorage.getItem("genius-openai-model");
+  if (sessionKey) $("#openaiApiKey").value = sessionKey;
+  if (sessionModel) $("#openaiModel").value = sessionModel;
 }
 
 function bindEvents() {
@@ -765,6 +1010,13 @@ function bindEvents() {
     if (button) deleteUploadedFile(Number(button.dataset.deleteFile));
   });
   $("#analyzeButton").addEventListener("click", analyze);
+  $("#resetButton").addEventListener("click", () => {
+    if (confirm("Reset the page and clear uploaded files, generated sections, and production form data?")) resetPage();
+  });
+  $("#extraSectionsContent").addEventListener("input", () => {
+    syncExtraSectionsFromDom();
+    saveState();
+  });
   $("#printAllButton").addEventListener("click", () => window.print());
   $$(".print-section").forEach((button) => button.addEventListener("click", () => printSection(button.dataset.print)));
   $$(".export-grid button").forEach((button) => button.addEventListener("click", () => exportPacket(button.dataset.export)));
