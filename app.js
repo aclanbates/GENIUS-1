@@ -132,22 +132,106 @@ function readFileAsText(file) {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
     reader.onerror = () => resolve("");
-    if (/\.(txt|md|csv|rtf|html?|json)$/i.test(file.name) || /^text\//.test(file.type)) {
-      reader.readAsText(file);
-    } else {
-      resolve("");
-    }
+    reader.readAsText(file);
   });
 }
 
+function decodeXmlText(value) {
+  const holder = document.createElement("textarea");
+  holder.innerHTML = value;
+  return holder.value;
+}
+
+async function inflateRaw(bytes) {
+  if (!("DecompressionStream" in window)) return "";
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return await new Response(stream).arrayBuffer();
+}
+
+async function unzipEntries(buffer) {
+  const view = new DataView(buffer);
+  const entries = new Map();
+  let offset = 0;
+  while (offset + 30 < view.byteLength) {
+    if (view.getUint32(offset, true) !== 0x04034b50) break;
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const fileNameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const dataStart = nameStart + fileNameLength + extraLength;
+    const nameBytes = new Uint8Array(buffer, nameStart, fileNameLength);
+    const name = new TextDecoder().decode(nameBytes);
+    const compressed = new Uint8Array(buffer, dataStart, compressedSize);
+    if (compressedSize && !name.endsWith("/")) {
+      let content = "";
+      if (method === 0) content = new TextDecoder().decode(compressed);
+      if (method === 8) content = new TextDecoder().decode(await inflateRaw(compressed));
+      if (content) entries.set(name, content);
+    }
+    offset = dataStart + compressedSize;
+  }
+  return entries;
+}
+
+async function extractDocxText(file) {
+  const entries = await unzipEntries(await file.arrayBuffer());
+  const documentParts = ["word/document.xml", "word/footnotes.xml", "word/endnotes.xml"]
+    .map((name) => entries.get(name))
+    .filter(Boolean);
+  if (!documentParts.length) return "";
+  return documentParts.map((xml) => {
+    return xml
+      .replace(/<w:tab\/>/g, "\t")
+      .replace(/<w:br\/>/g, "\n")
+      .replace(/<\/w:p>/g, "\n")
+      .replace(/<[^>]+>/g, "")
+      .split("\n")
+      .map((line) => decodeXmlText(line).replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n");
+  }).join("\n\n");
+}
+
+async function readUploadedDocument(file) {
+  const lowerName = file.name.toLowerCase();
+  if (/\.(txt|md|csv|rtf|html?|json|fdx|fountain)$/i.test(file.name) || /^text\//.test(file.type)) {
+    const text = await readFileAsText(file);
+    return { text, status: text.trim() ? "read" : "empty" };
+  }
+  if (lowerName.endsWith(".docx")) {
+    try {
+      const text = await extractDocxText(file);
+      return { text, status: text.trim() ? "docx extracted" : "docx unreadable" };
+    } catch {
+      return { text: "", status: "docx unreadable" };
+    }
+  }
+  if (lowerName.endsWith(".pdf")) {
+    const roughText = await readFileAsText(file);
+    const readable = roughText.replace(/[^\x20-\x7E\n]/g, " ").replace(/\s+/g, " ").trim();
+    const likelyUseful = readable.length > 600 && /scene|act|character|dialogue|song|int\.|ext\./i.test(readable);
+    return {
+      text: likelyUseful ? readable : "",
+      status: likelyUseful ? "pdf text detected" : "pdf text needs conversion"
+    };
+  }
+  return { text: "", status: "unsupported format" };
+}
+
 async function handleFiles(files) {
-  state.files = Array.from(files).map((file) => ({
+  const fileArray = Array.from(files);
+  const results = await Promise.all(fileArray.map(readUploadedDocument));
+  state.files = fileArray.map((file, index) => ({
     name: file.name,
     size: file.size,
-    type: file.type || "unknown"
+    type: file.type || "unknown",
+    status: results[index].status
   }));
-  const texts = await Promise.all(Array.from(files).map(readFileAsText));
-  state.sourceText = texts.filter(Boolean).join("\n\n--- FILE BREAK ---\n\n");
+  state.sourceText = results
+    .map((result, index) => result.text.trim() ? `SOURCE FILE: ${fileArray[index].name}\n${result.text.trim()}` : "")
+    .filter(Boolean)
+    .join("\n\n--- FILE BREAK ---\n\n");
   renderFileList();
   saveState();
 }
@@ -159,25 +243,35 @@ function renderFileList() {
     return;
   }
   list.innerHTML = state.files
-    .map((file) => `<span class="file-pill">${escapeHtml(file.name)} · ${Math.ceil(file.size / 1024)} KB</span>`)
+    .map((file) => `<span class="file-pill">${escapeHtml(file.name)} · ${Math.ceil(file.size / 1024)} KB · ${escapeHtml(file.status || "loaded")}</span>`)
     .join("");
 }
 
 function splitScenes(text) {
   const normalized = text.replace(/\r/g, "\n");
+  const headingPattern = /(?:ACT|SCENE|CHAPTER|PART)\s+[A-Z0-9IVX-]+|(?:INT\.|EXT\.|I\/E\.)\s+[^\n]+|[0-9]+\.\s+[^\n]+/i;
   const candidates = normalized
-    .split(/\n(?=(?:ACT|SCENE|CHAPTER|PART)\s+[A-Z0-9IVX-]+|[0-9]+\.\s+)/i)
+    .split(new RegExp(`\\n(?=${headingPattern.source})`, "i"))
     .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.length > 80);
-  if (candidates.length >= 3) return candidates.slice(0, 16);
+    .filter((chunk) => chunk.length > 120);
+  if (candidates.length >= 2) return candidates.slice(0, 24);
   const paragraphs = normalized.split(/\n{2,}/).map((p) => p.trim()).filter((p) => p.length > 80);
+  if (paragraphs.length > 6) {
+    const groupSize = Math.max(2, Math.ceil(paragraphs.length / 12));
+    const groups = [];
+    for (let index = 0; index < paragraphs.length; index += groupSize) {
+      groups.push(paragraphs.slice(index, index + groupSize).join("\n\n"));
+    }
+    return groups.slice(0, 16);
+  }
   return paragraphs.slice(0, 12);
 }
 
 function findCharacterNames(text) {
-  const dialogueNames = [...text.matchAll(/(?:^|\n)\s*([A-Z][A-Z .'-]{2,28})(?:\s*:|\n)/g)]
+  const dialogueNames = [...text.matchAll(/(?:^|\n)\s*([A-Z][A-Z0-9 .'-]{2,32})(?:\s*:|\n|\s+\([^)]+\)\s*\n)/g)]
     .map((match) => match[1].trim())
-    .filter((name) => !/^(ACT|SCENE|INT|EXT|LIGHTS|BLACKOUT|CURTAIN|SONG|MUSIC|CHORUS|ENSEMBLE)$/.test(name));
+    .filter((name) => !/^(ACT|SCENE|INT|EXT|LIGHTS|BLACKOUT|CURTAIN|SONG|MUSIC|CHORUS|ENSEMBLE|SOURCE FILE|PAGE|END)$/.test(name))
+    .filter((name) => name.length < 34 && !/\d{2,}/.test(name));
   const counts = dialogueNames.reduce((acc, name) => {
     acc[name] = (acc[name] || 0) + 1;
     return acc;
@@ -203,6 +297,41 @@ function summarize(chunk, max = 220) {
   return clean.length > max ? `${clean.slice(0, max).replace(/\s+\S*$/, "")}...` : clean;
 }
 
+function getStorySlices(text, scenes) {
+  const units = scenes.length >= 6 ? scenes : text.split(/\n{2,}/).map((line) => line.trim()).filter((line) => line.length > 80);
+  const fallback = text || "No readable uploaded document text was found.";
+  const at = (ratio) => {
+    if (!units.length) return fallback;
+    const index = Math.min(units.length - 1, Math.max(0, Math.round((units.length - 1) * ratio)));
+    return units[index];
+  };
+  return {
+    opening: at(0),
+    theme: at(0.08),
+    setup: at(0.14),
+    catalyst: at(0.2),
+    debate: at(0.28),
+    breakTwo: at(0.34),
+    bStory: at(0.42),
+    fun: at(0.5),
+    midpoint: at(0.56),
+    pressure: at(0.68),
+    allLost: at(0.76),
+    darkNight: at(0.82),
+    breakThree: at(0.88),
+    finale: at(0.95),
+    finalImage: at(1)
+  };
+}
+
+function beatParagraph(label, evidence, instruction) {
+  return `
+    <h3>${label}</h3>
+    <p><strong>Script evidence:</strong> ${escapeHtml(summarize(evidence, 320))}</p>
+    <p><strong>Production reading:</strong> ${escapeHtml(instruction)}</p>
+  `;
+}
+
 function inferSafety(text) {
   const checks = [
     ["Platforms and stairs", /platform|stair|ladder|balcony|level|ramp/i],
@@ -223,25 +352,28 @@ function htmlList(items) {
 
 function generateBeatSheet(text, scenes) {
   const title = state.production.title || "the piece";
-  const source = text || "No readable source text was loaded. Use this as a starter template.";
-  const beats = [
-    ["Opening Image", summarize(scenes[0] || source)],
-    ["Theme Stated", "Identify the moral, social, or emotional argument that the production must make visible early."],
-    ["Set-Up", "Establish the central world, its rules, the ensemble relationships, and the ordinary pressure around the lead character."],
-    ["Catalyst", summarize(scenes[1] || source)],
-    ["Debate", "Track the hesitation: what price will the central character pay if they act, and what price if they refuse?"],
-    ["Break into Two", "Mark the first irreversible theatrical turn: a journey, decision, revelation, public vow, or rupture."],
-    ["B Story", "Name the relationship, community, or idea that teaches the lead how to change."],
-    ["Fun and Games", "Stage the promise of the premise: the sequences audiences came to see, hear, and feel."],
-    ["Midpoint", summarize(scenes[Math.floor(scenes.length / 2)] || source)],
-    ["Bad Guys Close In", "External obstacles and private contradictions tighten together. Design should make the world feel less forgiving."],
-    ["All Is Lost", "Find the lowest theatrical image: isolation, failed performance, public humiliation, death, or total silence."],
-    ["Dark Night of the Soul", "Let the character understand what the story has been asking of them."],
-    ["Break into Three", "The solution arrives by combining plot action with the lesson of the B story."],
-    ["Finale", summarize(scenes.at(-1) || source)],
-    ["Final Image", `Define the visual opposite of the opening image for ${title}.`]
-  ];
-  return beats.map(([beat, note]) => `<h3>${beat}</h3><p>${escapeHtml(note)}</p>`).join("");
+  const slices = getStorySlices(text, scenes);
+  const countLine = text
+    ? `<p><strong>Source used:</strong> ${state.files.map((file) => `${escapeHtml(file.name)} (${escapeHtml(file.status || "loaded")})`).join(", ")}. ${scenes.length} scene/sequence chunks detected.</p>`
+    : "<p><strong>Source used:</strong> No readable uploaded text yet. Upload a TXT, MD, Fountain, Final Draft XML text export, or DOCX script/libretto for a document-based beat sheet.</p>";
+  return `
+    ${countLine}
+    ${beatParagraph("1. Opening Image", slices.opening, `Find the first theatrical picture of ${title}: world, tone, social order, and what feels incomplete before the story begins.`)}
+    ${beatParagraph("2. Theme Stated", slices.theme, "Listen for a line, argument, song idea, or stage image that tells the audience what emotional question the production will test.")}
+    ${beatParagraph("3. Set-Up", slices.setup, "Name the central world, primary relationships, rules of behavior, pressure points, and the character whose change matters most.")}
+    ${beatParagraph("4. Catalyst", slices.catalyst, "Identify the interruption that makes the old world impossible to continue: arrival, invitation, death, discovery, accusation, desire, or public event.")}
+    ${beatParagraph("5. Debate", slices.debate, "Track the hesitation and cost. What keeps the protagonist from acting, and what does the ensemble fear will happen?")}
+    ${beatParagraph("6. Break into Two", slices.breakTwo, "Mark the first irreversible move into a new plan, location, relationship, lie, rehearsal of identity, or open conflict.")}
+    ${beatParagraph("7. B Story", slices.bStory, "Find the relationship or secondary musical/dramatic line that teaches the central lesson and gives the audience emotional access.")}
+    ${beatParagraph("8. Fun and Games", slices.fun, "Stage the promise of the premise: the section where genre, theatricality, songs, rituals, comedy, romance, danger, or spectacle should be most legible.")}
+    ${beatParagraph("9. Midpoint", slices.midpoint, "Locate the false victory or false defeat. The production should feel as if the stakes have changed size here.")}
+    ${beatParagraph("10. Bad Guys Close In", slices.pressure, "External opposition and internal contradiction should tighten at the same time. Design, rhythm, and spacing should become less forgiving.")}
+    ${beatParagraph("11. All Is Lost", slices.allLost, "Find the lowest image: silence, separation, failed performance, public shame, literal death, emotional death, or total loss of control.")}
+    ${beatParagraph("12. Dark Night of the Soul", slices.darkNight, "Give the character and audience room to understand what has been lost and what truth must be accepted before the final action.")}
+    ${beatParagraph("13. Break into Three", slices.breakThree, "The solution should combine plot action with the lesson from the B story. This is where staging should reveal new clarity.")}
+    ${beatParagraph("14. Finale", slices.finale, "Track how the story resolves its central argument through action, song, confrontation, sacrifice, reunion, or transformation.")}
+    ${beatParagraph("15. Final Image", slices.finalImage, `Define the final stage picture as the visual answer to the opening image of ${title}.`)}
+  `;
 }
 
 function generateCharacters(text) {
