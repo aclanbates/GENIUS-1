@@ -327,12 +327,35 @@ textarea {
 }
 
 .file-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 7px 10px;
   background: white;
   color: #34434e;
   font-size: 0.9rem;
+}
+
+.file-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delete-file {
+  flex: 0 0 auto;
+  min-height: 26px;
+  border: 1px solid #e3b7b2;
+  border-radius: 999px;
+  background: #fff7f6;
+  color: var(--red);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 0 8px;
 }
 
 .analyze-button {

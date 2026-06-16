@@ -148,28 +148,46 @@ async function inflateRaw(bytes) {
   return await new Response(stream).arrayBuffer();
 }
 
+async function inflateZlib(bytes) {
+  if (!("DecompressionStream" in window)) return "";
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+  return await new Response(stream).arrayBuffer();
+}
+
 async function unzipEntries(buffer) {
   const view = new DataView(buffer);
   const entries = new Map();
-  let offset = 0;
-  while (offset + 30 < view.byteLength) {
-    if (view.getUint32(offset, true) !== 0x04034b50) break;
-    const method = view.getUint16(offset + 8, true);
-    const compressedSize = view.getUint32(offset + 18, true);
-    const fileNameLength = view.getUint16(offset + 26, true);
-    const extraLength = view.getUint16(offset + 28, true);
-    const nameStart = offset + 30;
-    const dataStart = nameStart + fileNameLength + extraLength;
-    const nameBytes = new Uint8Array(buffer, nameStart, fileNameLength);
-    const name = new TextDecoder().decode(nameBytes);
-    const compressed = new Uint8Array(buffer, dataStart, compressedSize);
-    if (compressedSize && !name.endsWith("/")) {
+  let eocd = -1;
+  for (let index = view.byteLength - 22; index >= Math.max(0, view.byteLength - 66000); index -= 1) {
+    if (view.getUint32(index, true) === 0x06054b50) {
+      eocd = index;
+      break;
+    }
+  }
+  if (eocd === -1) return entries;
+  const centralDirectorySize = view.getUint32(eocd + 12, true);
+  const centralDirectoryOffset = view.getUint32(eocd + 16, true);
+  let offset = centralDirectoryOffset;
+  const end = centralDirectoryOffset + centralDirectorySize;
+  while (offset + 46 <= end && view.getUint32(offset, true) === 0x02014b50) {
+    const method = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const fileNameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localHeaderOffset = view.getUint32(offset + 42, true);
+    const name = new TextDecoder().decode(new Uint8Array(buffer, offset + 46, fileNameLength));
+    if (compressedSize && !name.endsWith("/") && view.getUint32(localHeaderOffset, true) === 0x04034b50) {
+      const localFileNameLength = view.getUint16(localHeaderOffset + 26, true);
+      const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+      const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+      const compressed = new Uint8Array(buffer, dataStart, compressedSize);
       let content = "";
       if (method === 0) content = new TextDecoder().decode(compressed);
       if (method === 8) content = new TextDecoder().decode(await inflateRaw(compressed));
       if (content) entries.set(name, content);
     }
-    offset = dataStart + compressedSize;
+    offset += 46 + fileNameLength + extraLength + commentLength;
   }
   return entries;
 }
@@ -193,9 +211,129 @@ async function extractDocxText(file) {
   }).join("\n\n");
 }
 
+function stripMarkup(value) {
+  return decodeXmlText(value)
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractFdxText(xml) {
+  const paragraphs = [...xml.matchAll(/<Paragraph\b([^>]*)>([\s\S]*?)<\/Paragraph>/gi)];
+  if (!paragraphs.length) return stripMarkup(xml);
+  return paragraphs.map(([, attrs, body]) => {
+    const type = (attrs.match(/\bType="([^"]+)"/i)?.[1] || "").toLowerCase();
+    const text = [...body.matchAll(/<Text[^>]*>([\s\S]*?)<\/Text>/gi)]
+      .map((match) => decodeXmlText(match[1]).trim())
+      .filter(Boolean)
+      .join(" ");
+    if (!text) return "";
+    if (type.includes("scene")) return `\nSCENE - ${text.toUpperCase()}`;
+    if (type.includes("character")) return `\n${text.toUpperCase()}:`;
+    if (type.includes("dialogue")) return text;
+    if (type.includes("transition")) return `\n${text.toUpperCase()}`;
+    return text;
+  }).filter(Boolean).join("\n");
+}
+
+function bytesToBinaryString(bytes) {
+  let output = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    output += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return output;
+}
+
+function pdfStringToText(value) {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\\(/g, "(")
+    .replace(/\\\)/g, ")")
+    .replace(/\\\\/g, "\\")
+    .replace(/\\[0-7]{1,3}/g, " ")
+    .trim();
+}
+
+function extractPdfOperators(source) {
+  const textRuns = [];
+  const literalPattern = /\((?:\\.|[^\\)]){2,}\)\s*(?:Tj|'|"|TJ)/g;
+  const arrayPattern = /\[((?:\s*\((?:\\.|[^\\)])*\)\s*-?\d*)+)\]\s*TJ/g;
+  let match;
+  while ((match = literalPattern.exec(source))) {
+    textRuns.push(pdfStringToText(match[0].replace(/\)\s*(?:Tj|'|"|TJ)$/, "").slice(1)));
+  }
+  while ((match = arrayPattern.exec(source))) {
+    const pieces = [...match[1].matchAll(/\((?:\\.|[^\\)])*\)/g)]
+      .map((piece) => pdfStringToText(piece[0].slice(1, -1)))
+      .filter(Boolean);
+    if (pieces.length) textRuns.push(pieces.join(""));
+  }
+  return textRuns.join("\n");
+}
+
+async function extractPdfText(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const binary = bytesToBinaryString(bytes);
+  const parts = [extractPdfOperators(binary)];
+  const streamPattern = /<<(.*?)>>\s*stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let match;
+  while ((match = streamPattern.exec(binary))) {
+    const dict = match[1];
+    if (!/FlateDecode/i.test(dict)) continue;
+    const streamBytes = Uint8Array.from(match[2], (char) => char.charCodeAt(0) & 255);
+    try {
+      const inflated = await inflateZlib(streamBytes);
+      if (inflated) parts.push(extractPdfOperators(bytesToBinaryString(new Uint8Array(inflated))));
+    } catch {
+      try {
+        const inflatedRaw = await inflateRaw(streamBytes);
+        if (inflatedRaw) parts.push(extractPdfOperators(bytesToBinaryString(new Uint8Array(inflatedRaw))));
+      } catch {
+        // Some PDFs use encodings that cannot be read in-browser without a full PDF parser.
+      }
+    }
+  }
+  return parts
+    .join("\n")
+    .replace(/[^\x09\x0A\x0D\x20-\x7EÀ-ž]/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function extractIWorkText(file, label) {
+  try {
+    const entries = await unzipEntries(await file.arrayBuffer());
+    const readable = [];
+    entries.forEach((content, name) => {
+      if (/\.(xml|html?|txt|json|plist)$/i.test(name)) readable.push(stripMarkup(content));
+    });
+    const text = readable
+      .join("\n\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 2 && !/^[{}[\],":0-9.\s-]+$/.test(line))
+      .join("\n");
+    return text.length > 250 ? text : "";
+  } catch {
+    return "";
+  }
+}
+
 async function readUploadedDocument(file) {
   const lowerName = file.name.toLowerCase();
-  if (/\.(txt|md|csv|rtf|html?|json|fdx|fountain)$/i.test(file.name) || /^text\//.test(file.type)) {
+  if (lowerName.endsWith(".fdx")) {
+    const text = extractFdxText(await readFileAsText(file));
+    return { text, status: text.trim() ? "fdx extracted" : "fdx unreadable" };
+  }
+  if (/\.(txt|md|csv|rtf|html?|json|fountain)$/i.test(file.name) || /^text\//.test(file.type)) {
     const text = await readFileAsText(file);
     return { text, status: text.trim() ? "read" : "empty" };
   }
@@ -208,12 +346,19 @@ async function readUploadedDocument(file) {
     }
   }
   if (lowerName.endsWith(".pdf")) {
-    const roughText = await readFileAsText(file);
-    const readable = roughText.replace(/[^\x20-\x7E\n]/g, " ").replace(/\s+/g, " ").trim();
-    const likelyUseful = readable.length > 600 && /scene|act|character|dialogue|song|int\.|ext\./i.test(readable);
+    const readable = await extractPdfText(file);
+    const likelyUseful = readable.length > 300;
     return {
       text: likelyUseful ? readable : "",
       status: likelyUseful ? "pdf text detected" : "pdf text needs conversion"
+    };
+  }
+  if (lowerName.endsWith(".pages") || lowerName.endsWith(".numbers")) {
+    const label = lowerName.endsWith(".pages") ? "pages" : "numbers";
+    const text = await extractIWorkText(file, label);
+    return {
+      text,
+      status: text.trim() ? `${label} text extracted` : `${label} needs export`
     };
   }
   return { text: "", status: "unsupported format" };
@@ -222,16 +367,30 @@ async function readUploadedDocument(file) {
 async function handleFiles(files) {
   const fileArray = Array.from(files);
   const results = await Promise.all(fileArray.map(readUploadedDocument));
-  state.files = fileArray.map((file, index) => ({
+  const incomingFiles = fileArray.map((file, index) => ({
     name: file.name,
     size: file.size,
     type: file.type || "unknown",
-    status: results[index].status
+    status: results[index].status,
+    text: results[index].text.trim()
   }));
-  state.sourceText = results
-    .map((result, index) => result.text.trim() ? `SOURCE FILE: ${fileArray[index].name}\n${result.text.trim()}` : "")
+  state.files = [...state.files, ...incomingFiles];
+  rebuildSourceText();
+  renderFileList();
+  $("#fileInput").value = "";
+  saveState();
+}
+
+function rebuildSourceText() {
+  state.sourceText = state.files
+    .map((file) => file.text ? `SOURCE FILE: ${file.name}\n${file.text}` : "")
     .filter(Boolean)
     .join("\n\n--- FILE BREAK ---\n\n");
+}
+
+function deleteUploadedFile(index) {
+  state.files.splice(index, 1);
+  rebuildSourceText();
   renderFileList();
   saveState();
 }
@@ -243,7 +402,12 @@ function renderFileList() {
     return;
   }
   list.innerHTML = state.files
-    .map((file) => `<span class="file-pill">${escapeHtml(file.name)} · ${Math.ceil(file.size / 1024)} KB · ${escapeHtml(file.status || "loaded")}</span>`)
+    .map((file, index) => `
+      <span class="file-pill">
+        <span>${escapeHtml(file.name)} · ${Math.ceil(file.size / 1024)} KB · ${escapeHtml(file.status || "loaded")}</span>
+        <button type="button" class="delete-file" data-delete-file="${index}" title="Delete ${escapeHtml(file.name)}">Delete</button>
+      </span>
+    `)
     .join("");
 }
 
@@ -355,7 +519,7 @@ function generateBeatSheet(text, scenes) {
   const slices = getStorySlices(text, scenes);
   const countLine = text
     ? `<p><strong>Source used:</strong> ${state.files.map((file) => `${escapeHtml(file.name)} (${escapeHtml(file.status || "loaded")})`).join(", ")}. ${scenes.length} scene/sequence chunks detected.</p>`
-    : "<p><strong>Source used:</strong> No readable uploaded text yet. Upload a TXT, MD, Fountain, Final Draft XML text export, or DOCX script/libretto for a document-based beat sheet.</p>";
+    : "<p><strong>Source used:</strong> No readable uploaded text yet. Upload TXT, MD, Fountain, FDX, DOCX, readable PDF, Pages, or Numbers files for a document-based beat sheet. Scanned or binary-only files may need export to text first.</p>";
   return `
     ${countLine}
     ${beatParagraph("1. Opening Image", slices.opening, `Find the first theatrical picture of ${title}: world, tone, social order, and what feels incomplete before the story begins.`)}
@@ -556,6 +720,10 @@ function loadState() {
     state.production = payload.production || {};
     state.files = payload.files || [];
     state.sourceText = payload.sourceText || "";
+    if (state.sourceText && state.files.length === 1 && !state.files[0].text) {
+      state.files[0].text = state.sourceText;
+    }
+    if (state.files.some((file) => file.text)) rebuildSourceText();
     setProductionFormData(state.production);
     renderFileList();
     editableIds.forEach((id) => {
@@ -592,6 +760,10 @@ function bindEvents() {
     if (button) openInlineEditor(button.dataset.edit);
   });
   $("#fileInput").addEventListener("change", (event) => handleFiles(event.target.files));
+  $("#fileList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-delete-file]");
+    if (button) deleteUploadedFile(Number(button.dataset.deleteFile));
+  });
   $("#analyzeButton").addEventListener("click", analyze);
   $("#printAllButton").addEventListener("click", () => window.print());
   $$(".print-section").forEach((button) => button.addEventListener("click", () => printSection(button.dataset.print)));
